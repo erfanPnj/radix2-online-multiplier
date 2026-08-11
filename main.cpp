@@ -3,16 +3,16 @@
 #include <vector>
 #include <string>
 #include <algorithm>
-#include <cmath> // Added for std::pow and std::abs
+#include <cmath>
 
-// Standard gate-level Full Adder
+// full adder
 void FA(int a, int b, int c, int &cout, int &sum)
 {
     sum = a ^ b ^ c;
     cout = (a & b) | (b & c) | (a & c);
 }
 
-// Convert-and-Append (CA) Register
+// ca reg
 template <size_t N>
 class CAReg
 {
@@ -135,12 +135,15 @@ std::string format_w_assimilated(const int S[], const int C[], int SZ, int frac_
     return res;
 }
 
-// Selector Block routing
+// Selector
 template <size_t N>
-void select_val(int dir, const CAReg<N> &reg, int A[], int SZ)
+void select_val(int dir, const CAReg<N> &reg, int A[], int SZ, int &c_out, int &lsb_idx_out)
 {
     for (int i = 0; i < SZ; ++i)
         A[i] = 0;
+
+    c_out = 0;
+    lsb_idx_out = 0;
 
     if (dir != 0)
     {
@@ -157,26 +160,15 @@ void select_val(int dir, const CAReg<N> &reg, int A[], int SZ)
         int lsb_idx = reg.step - 1 + 4;
         if (lsb_idx >= SZ)
             lsb_idx = SZ - 1;
+        lsb_idx_out = lsb_idx;
 
         for (int i = 0; i <= lsb_idx; ++i)
         {
             A[i] = A[i] ^ 1;
         }
 
-        int idx = lsb_idx;
-        while (idx >= 0)
-        {
-            if (A[idx] == 0)
-            {
-                A[idx] = 1;
-                break;
-            }
-            else
-            {
-                A[idx] = 0;
-                idx--;
-            }
-        }
+        // cx or cy signal
+        c_out = 1;
     }
 }
 
@@ -201,17 +193,18 @@ public:
         for (int j = -3; j < (int)N; ++j)
         {
             int k = j + 4;
-            int xj4 = (k >= 1 && k <= (int)N) ? x_in[k - 1] : 0;
-            int yj4 = (k >= 1 && k <= (int)N) ? y_in[k - 1] : 0;
+            int xj4 = (k >= 1 && k <= x_in.size()) ? x_in[k - 1] : 0;
+            int yj4 = (k >= 1 && k <= y_in.size()) ? y_in[k - 1] : 0;
 
             X_reg.append(xj4, N);
-            int A[SZ];
-            select_val(xj4, Y_reg, A, SZ);
+            int A[SZ], c_A = 0, lsb_A = 0;
+            select_val(xj4, Y_reg, A, SZ, c_A, lsb_A);
 
             Y_reg.append(yj4, N);
-            int B[SZ];
-            select_val(yj4, X_reg, B, SZ);
+            int B[SZ], c_B = 0, lsb_B = 0;
+            select_val(yj4, X_reg, B, SZ, c_B, lsb_B);
 
+            // [4:2] adder
             int c1_out[SZ] = {0};
             int s1[SZ] = {0};
             for (int i = 0; i < SZ; ++i)
@@ -224,6 +217,11 @@ public:
             for (int i = 0; i < SZ; ++i)
             {
                 int cin_layer2 = (i + 1 < SZ) ? c1_out[i + 1] : 0;
+                if (i == lsb_A)
+                {
+                    cin_layer2 |= c_A;
+                }
+
                 int c2;
                 FA(s1[i], B[i], cin_layer2, c2, V_S[i]);
                 if (i > 0)
@@ -231,7 +229,12 @@ public:
                     V_C[i - 1] = c2;
                 }
             }
+            if (lsb_B < SZ)
+            {
+                V_C[lsb_B] |= c_B;
+            }
 
+            // V
             int carry = 0;
             int v_est[4] = {0};
             for (int i = 3; i >= 0; --i)
@@ -245,6 +248,7 @@ public:
             int v_0 = v_est[1];
             int v_1 = v_est[2];
 
+            // selm
             int pp = (v_m1 ^ 1) & (v_0 | v_1);
             int pn = v_m1 & ((v_0 ^ 1) | (v_1 ^ 1));
 
@@ -338,8 +342,9 @@ public:
         std::cout << "Computed SD Result (Dec): " << final_result << "\n";
         std::cout << "Expected x_in * y_in    : " << expected_x << " * " << expected_y << " = " << exact_product << "\n";
         std::cout << "Truncation Error        : " << truncation_error << "\n";
-        std::cout << "Target Error Bound      : " << std::pow(2.0, -(int)N) << " (2^-8)\n";
-        std::cout << "==============================================================================\n";
+        std::cout << "Target Error Bound      : " << std::pow(2.0, -(int)N) << " (2^" << -(int)N << ")" << "\n ";
+        std::cout
+            << "==============================================================================\n";
     }
 };
 
@@ -348,7 +353,7 @@ int main()
     std::vector<int> x = {1, 1, 0, -1, 1, 0, -1, 1};
     std::vector<int> y = {1, 0, 1, -1, -1, 1, 1, 0};
 
-    OnlineMultiplier<64> mult;
+    OnlineMultiplier<16> mult;
     mult.run(x, y);
 
     return 0;
