@@ -4,8 +4,6 @@
 #include <string>
 #include <algorithm>
 
-using namespace std;
-
 // Standard gate-level Full Adder
 void FA(int a, int b, int c, int &cout, int &sum)
 {
@@ -25,7 +23,7 @@ public:
     void append(int x_in, int max_steps)
     {
         if (step > max_steps)
-            return; // Freeze after maximum digits are reached
+            return;
 
         int next_X[N + 1] = {0};
         int next_XM[N + 1] = {0};
@@ -50,7 +48,6 @@ public:
         {
             next_X[step] = 0;
             next_XM[step] = 1;
-            // X retains X, XM retains XM
         }
         else if (x_in == -1)
         {
@@ -76,41 +73,68 @@ public:
     }
 };
 
-// String formatting helpers for trace output
+// String formatting helper for CA Register
 template <size_t N>
-string format_CA(const CAReg<N> &reg, int limit)
+std::string format_CA(const CAReg<N> &reg, int limit)
 {
-    string s = ".";
+    std::string s = ".";
     int len = reg.step - 1;
     if (len > limit)
         len = limit;
     for (int i = 1; i <= len; ++i)
     {
-        s += to_string(reg.get_bit(i));
+        s += std::to_string(reg.get_bit(i));
     }
     return s;
 }
 
-string format_assimilated(const int S[], const int C[], int SZ, int frac_bits)
+// Software ripple-carry assimilation for printing terminal traces only
+std::string format_assimilated(const int S[], const int C[], int SZ, int frac_bits)
 {
     int sum_arr[200] = {0};
     int carry = 0;
-    // Ripple carry is used here strictly for printing the terminal trace
     for (int i = SZ - 1; i >= 0; --i)
     {
         int s;
         FA(S[i], C[i], carry, carry, s);
         sum_arr[i] = s;
     }
-    string res = to_string(sum_arr[0]) + to_string(sum_arr[1]) + ".";
+    std::string res = std::to_string(sum_arr[0]) + std::to_string(sum_arr[1]) + ".";
     for (int i = 0; i < frac_bits; ++i)
     {
-        res += to_string(sum_arr[i + 2]);
+        res += std::to_string(sum_arr[i + 2]);
     }
     return res;
 }
 
-// Selector Block
+// Emulates an arithmetic right shift by 1 to print w[j+1] correctly from 2w[j+1]
+std::string format_w_assimilated(const int S[], const int C[], int SZ, int frac_bits)
+{
+    int sum_arr[200] = {0};
+    int carry = 0;
+    for (int i = SZ - 1; i >= 0; --i)
+    {
+        int s;
+        FA(S[i], C[i], carry, carry, s);
+        sum_arr[i] = s;
+    }
+
+    int shifted[200] = {0};
+    shifted[0] = sum_arr[0]; // Sign extension
+    for (int i = 1; i < SZ; ++i)
+    {
+        shifted[i] = sum_arr[i - 1];
+    }
+
+    std::string res = std::to_string(shifted[0]) + std::to_string(shifted[1]) + ".";
+    for (int i = 0; i < frac_bits; ++i)
+    {
+        res += std::to_string(shifted[i + 2]);
+    }
+    return res;
+}
+
+// Selector Block routing
 template <size_t N>
 void select_val(int dir, const CAReg<N> &reg, int A[], int &c, int SZ)
 {
@@ -119,21 +143,22 @@ void select_val(int dir, const CAReg<N> &reg, int A[], int &c, int SZ)
 
     if (dir != 0)
     {
-        for (int i = 1; i < reg.step; ++i)
+        for (int i = 1; i <= N; ++i)
         {
             if (i + 4 < SZ)
                 A[i + 4] = reg.get_bit(i);
         }
     }
 
-    // 2's complement negation setup if negative digit
+    // 2's complement negation exactly at the dynamic boundaries
     if (dir == -1)
     {
-        for (int i = 0; i < SZ; ++i)
+        // Invert only down to the LSB of the valid fractional string to prevent carry trapping
+        for (int i = 0; i <= N + 4 && i < SZ; ++i)
         {
-            A[i] = 1 - A[i];
+            A[i] = A[i] ^ 1;
         }
-        c = 1; // Inject carry into the lowest FA to complete 2's complement
+        c = 1;
     }
     else
     {
@@ -144,17 +169,17 @@ void select_val(int dir, const CAReg<N> &reg, int A[], int &c, int SZ)
 template <size_t N>
 class OnlineMultiplier
 {
-    static constexpr int SZ = N + 8; // Bit width mapping
+    static constexpr int SZ = N + 8;
     int W_S[SZ] = {0};
     int W_C[SZ] = {0};
     CAReg<N> X_reg;
     CAReg<N> Y_reg;
 
 public:
-    void run(const vector<int> &x_in, const vector<int> &y_in)
+    void run(const std::vector<int> &x_in, const std::vector<int> &y_in)
     {
-        cout << " j | x_in | y_in |     x[j+1] |     y[j+1] |            v[j] | p_out |          w[j+1]\n";
-        cout << "------------------------------------------------------------------------------------------\n";
+        std::cout << " j | x_in | y_in |     x[j+1] |     y[j+1] |            v[j] | p_out |          w[j+1]\n";
+        std::cout << "------------------------------------------------------------------------------------------\n";
 
         for (int j = -3; j < (int)N; ++j)
         {
@@ -162,152 +187,129 @@ public:
             int xj4 = (k >= 1 && k <= (int)N) ? x_in[k - 1] : 0;
             int yj4 = (k >= 1 && k <= (int)N) ? y_in[k - 1] : 0;
 
-            // Notice the asymmetric registry: X_reg updates before selection to model X[j+1]
             X_reg.append(xj4, N);
 
             int A[SZ], c_A;
             select_val(xj4, Y_reg, A, c_A, SZ);
 
-            // Y_reg updates after X selection to model Y[j] for the top branch
             Y_reg.append(yj4, N);
 
             int B[SZ], c_B;
             select_val(yj4, X_reg, B, c_B, SZ);
 
-            // Shift W by 1 for 2W (wired left shift)
-            int W2_S[SZ] = {0}, W2_C[SZ] = {0};
-            for (int i = 0; i < SZ - 1; ++i)
-            {
-                W2_S[i] = W_S[i + 1];
-                W2_C[i] = W_C[i + 1];
-            }
-            // Inject negated carries into vacated LSB positions
-            W2_S[SZ - 1] = c_A;
-            W2_C[SZ - 1] = c_B;
-
             // [4:2] Compressor Array - Layer 1
-            int cout_arr[SZ] = {0};
-            int s1_arr[SZ] = {0};
+            int c1_out[SZ] = {0};
+            int s1[SZ] = {0};
             for (int i = 0; i < SZ; ++i)
             {
-                FA(W2_S[i], W2_C[i], A[i], cout_arr[i], s1_arr[i]);
+                FA(W_S[i], W_C[i], A[i], c1_out[i], s1[i]);
             }
 
-            // [4:2] Compressor Array - Layer 2 (generating v_s and v_c)
+            // [4:2] Compressor Array - Layer 2 (generating carry-save v[j])
             int V_S[SZ] = {0};
             int V_C[SZ] = {0};
             for (int i = 0; i < SZ; ++i)
             {
-                int cin = (i == SZ - 1) ? 0 : cout_arr[i + 1];
-                int c2, s2;
-                FA(s1_arr[i], B[i], cin, c2, s2);
-                V_S[i] = s2;
+                int cin_layer2 = (i + 1 < SZ) ? c1_out[i + 1] : 0;
+
+                // Inject the 2's complement carry exactly at the valid LSB
+                if (i == N + 4)
+                    cin_layer2 |= c_A;
+
+                int c2;
+                FA(s1[i], B[i], cin_layer2, c2, V_S[i]);
                 if (i > 0)
                 {
                     V_C[i - 1] = c2;
                 }
             }
-            V_C[SZ - 1] = 0;
+            if (N + 4 < SZ)
+                V_C[N + 4] |= c_B; // Inject B's 2's complement carry
 
-            // V Block Assimilation (Top 6 bits: indices 0 to 5)
+            // V Block Assimilation (Assimilating 6 bits to securely cross the truncation boundary)
             int carry = 0;
-            int assimilated[6] = {0};
+            int v_est[6] = {0};
             for (int i = 5; i >= 0; --i)
             {
                 int sum;
                 FA(V_S[i], V_C[i], carry, carry, sum);
-                assimilated[i] = sum;
+                v_est[i] = sum;
             }
 
-            // SELM Selection Logic
-            int val = 0;
-            for (int i = 0; i <= 5; ++i)
-            {
-                val = (val << 1) | assimilated[i];
-            }
-            if (assimilated[0] == 1)
-                val |= ~0x3F; // Sign extend the 6-bit estimate
+            // SELM Logic using exact switching expressions mapped to v_est top bits
+            int v_m1 = v_est[0];
+            int v_0 = v_est[1];
+            int v_1 = v_est[2];
+
+            int pp = (v_m1 ^ 1) & (v_0 | v_1);       //
+            int pn = v_m1 & ((v_0 ^ 1) | (v_1 ^ 1)); //
 
             int p = 0;
-            if (val >= 8)
+            if (pp)
                 p = 1;
-            else if (val <= -8)
+            else if (pn)
                 p = -1;
-            else
-                p = 0;
 
-            // M Block: Subtraction logic represented purely by logic vectors
-            int P_vec[6] = {0};
-            if (p == 1)
+            int abs_p = pp | pn;
+
+            // M Block: Boolean XOR replacement for subtraction mapped physically to wiring
+            int v_0_star = v_0 ^ abs_p;
+
+            int next_W_S[SZ] = {0};
+            int next_W_C[SZ] = {0};
+
+            // Hardware wired left-shift routing
+            next_W_S[0] = v_0_star;
+            next_W_S[1] = v_est[2];
+            next_W_S[2] = v_est[3];
+
+            for (int i = 3; i < SZ; ++i)
             {
-                // Equivalent to adding 2's complement of 1 (-16 in shifted fixed point)
-                P_vec[0] = 1;
-                P_vec[1] = 1;
-                P_vec[2] = 0;
-                P_vec[3] = 0;
-                P_vec[4] = 0;
-                P_vec[5] = 0;
-            }
-            else if (p == -1)
-            {
-                // Equivalent to adding 1 (16 in shifted fixed point)
-                P_vec[0] = 0;
-                P_vec[1] = 1;
-                P_vec[2] = 0;
-                P_vec[3] = 0;
-                P_vec[4] = 0;
-                P_vec[5] = 0;
+                next_W_S[i] = (i + 1 < SZ) ? V_S[i + 1] : 0;
+                next_W_C[i] = (i + 1 < SZ) ? V_C[i + 1] : 0;
             }
 
-            int m_carry = 0;
-            for (int i = 5; i >= 0; --i)
-            {
-                int s;
-                FA(assimilated[i], P_vec[i], m_carry, m_carry, s);
-                W_S[i] = s;
-                W_C[i] = 0; // Top WC bits zeroed out post-subtraction
-            }
+            next_W_C[0] = 0;
+            next_W_C[1] = 0;
+            next_W_C[2] = 0;
 
-            // Lower unassimilated bits pass through
-            for (int i = 6; i < SZ; ++i)
-            {
-                W_S[i] = V_S[i];
-                W_C[i] = V_C[i];
-            }
-
-            // Dynamically scope fractional print lengths to align perfectly with the textbook
             int frac_bits = j + 7;
             if (j > (int)N - 4)
             {
                 frac_bits = N + 3 - (j - (N - 4));
             }
 
-            string sx = (k >= 1 && k <= (int)N) ? to_string(xj4) : "0";
-            string sy = (k >= 1 && k <= (int)N) ? to_string(yj4) : "0";
-            string sp = to_string(p);
+            std::string sx = (k >= 1 && k <= (int)N) ? std::to_string(xj4) : "0";
+            std::string sy = (k >= 1 && k <= (int)N) ? std::to_string(yj4) : "0";
+            std::string sp = std::to_string(p);
 
-            string s_x_reg = format_CA(X_reg, N);
-            string s_y_reg = format_CA(Y_reg, N);
-            string s_v = format_assimilated(V_S, V_C, SZ, frac_bits);
-            string s_w = format_assimilated(W_S, W_C, SZ, frac_bits);
+            std::string s_x_reg = format_CA(X_reg, N);
+            std::string s_y_reg = format_CA(Y_reg, N);
+            std::string s_v = format_assimilated(V_S, V_C, SZ, frac_bits);
+            std::string s_w = format_w_assimilated(next_W_S, next_W_C, SZ, frac_bits);
 
-            cout << setw(2) << j << " | "
-                 << setw(4) << sx << " | "
-                 << setw(4) << sy << " | "
-                 << setw(10) << s_x_reg << " | "
-                 << setw(10) << s_y_reg << " | "
-                 << setw(15) << s_v << " | "
-                 << setw(5) << sp << " | "
-                 << setw(15) << s_w << "\n";
+            for (int i = 0; i < SZ; ++i)
+            {
+                W_S[i] = next_W_S[i];
+                W_C[i] = next_W_C[i];
+            }
+
+            std::cout << std::setw(2) << j << " | "
+                      << std::setw(4) << sx << " | "
+                      << std::setw(4) << sy << " | "
+                      << std::setw(10) << s_x_reg << " | "
+                      << std::setw(10) << s_y_reg << " | "
+                      << std::setw(15) << s_v << " | "
+                      << std::setw(5) << sp << " | "
+                      << std::setw(15) << s_w << "\n";
         }
     }
 };
 
 int main()
 {
-    // Page 50 operand initialization
-    vector<int> x = {1, 1, 0, -1, 1, 0, -1, 1};
-    vector<int> y = {1, 0, 1, -1, -1, 1, 1, 0};
+    std::vector<int> x = {1, 1, 0, -1, 1, 0, -1, 1};
+    std::vector<int> y = {1, 0, 1, -1, -1, 1, 1, 0};
 
     OnlineMultiplier<8> mult;
     mult.run(x, y);
