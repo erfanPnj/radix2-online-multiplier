@@ -181,6 +181,94 @@ class OnlineMultiplier
     CAReg<N> X_reg;
     CAReg<N> Y_reg;
 
+private:
+    // 4 to 2 adder
+    void adder_4_to_2(const int A[], const int B[], int c_A, int lsb_A, int c_B, int lsb_B, int V_S[], int V_C[])
+    {
+        int c1_out[SZ] = {0};
+        int s1[SZ] = {0};
+
+        // first FA
+        for (int i = 0; i < SZ; ++i)
+        {
+            FA(W_S[i], W_C[i], A[i], c1_out[i], s1[i]);
+        }
+
+        // secomd FA
+        for (int i = 0; i < SZ; ++i)
+        {
+            int cin_layer2 = (i + 1 < SZ) ? c1_out[i + 1] : 0;
+            if (i == lsb_A)
+            {
+                cin_layer2 |= c_A;
+            }
+
+            int c2;
+            FA(s1[i], B[i], cin_layer2, c2, V_S[i]);
+            if (i > 0)
+            {
+                V_C[i - 1] = c2;
+            }
+        }
+
+        if (lsb_B < SZ)
+        {
+            V_C[lsb_B] |= c_B;
+        }
+    }
+
+    // V block
+    void execute_V_block(const int V_S[], const int V_C[], int v_est[])
+    {
+        int carry = 0;
+        for (int i = 3; i >= 0; --i)
+        {
+            int sum;
+            FA(V_S[i], V_C[i], carry, carry, sum);
+            v_est[i] = sum;
+        }
+    }
+
+    // SELM
+    int execute_SELM(const int v_est[])
+    {
+        int v_m1 = v_est[0];
+        int v_0 = v_est[1];
+        int v_1 = v_est[2];
+
+        int pp = (v_m1 ^ 1) & (v_0 | v_1);
+        int pn = v_m1 & ((v_0 ^ 1) | (v_1 ^ 1));
+
+        int p = 0;
+        if (pp)
+            p = 1;
+        else if (pn)
+            p = -1;
+
+        return p;
+    }
+
+    // M block and left shifts
+    void execute_M_block(int p, const int v_est[], const int V_S[], const int V_C[], int next_W_S[], int next_W_C[])
+    {
+        int abs_p = (p == 1 || p == -1) ? 1 : 0; // معادل منطقی pp | pn
+        int v_0_star = v_est[1] ^ abs_p;
+
+        next_W_S[0] = v_0_star;
+        next_W_S[1] = v_est[2];
+        next_W_S[2] = v_est[3];
+
+        for (int i = 3; i < SZ; ++i)
+        {
+            next_W_S[i] = (i + 1 < SZ) ? V_S[i + 1] : 0;
+            next_W_C[i] = (i + 1 < SZ) ? V_C[i + 1] : 0;
+        }
+
+        next_W_C[0] = 0;
+        next_W_C[1] = 0;
+        next_W_C[2] = 0;
+    }
+
 public:
     void run(const std::vector<int> &x_in, const std::vector<int> &y_in)
     {
@@ -196,88 +284,36 @@ public:
             int xj4 = (k >= 1 && k <= x_in.size()) ? x_in[k - 1] : 0;
             int yj4 = (k >= 1 && k <= y_in.size()) ? y_in[k - 1] : 0;
 
+            // x register & selection
             X_reg.append(xj4, N);
             int A[SZ], c_A = 0, lsb_A = 0;
             select_val(xj4, Y_reg, A, SZ, c_A, lsb_A);
 
+            // y register & selection
             Y_reg.append(yj4, N);
             int B[SZ], c_B = 0, lsb_B = 0;
             select_val(yj4, X_reg, B, SZ, c_B, lsb_B);
 
             // [4:2] adder
-            int c1_out[SZ] = {0};
-            int s1[SZ] = {0};
-            for (int i = 0; i < SZ; ++i)
-            {
-                FA(W_S[i], W_C[i], A[i], c1_out[i], s1[i]);
-            }
-
             int V_S[SZ] = {0};
             int V_C[SZ] = {0};
-            for (int i = 0; i < SZ; ++i)
-            {
-                int cin_layer2 = (i + 1 < SZ) ? c1_out[i + 1] : 0;
-                if (i == lsb_A)
-                {
-                    cin_layer2 |= c_A;
-                }
+            adder_4_to_2(A, B, c_A, lsb_A, c_B, lsb_B, V_S, V_C);
 
-                int c2;
-                FA(s1[i], B[i], cin_layer2, c2, V_S[i]);
-                if (i > 0)
-                {
-                    V_C[i - 1] = c2;
-                }
-            }
-            if (lsb_B < SZ)
-            {
-                V_C[lsb_B] |= c_B;
-            }
-
-            // V
-            int carry = 0;
+            // V block
             int v_est[4] = {0};
-            for (int i = 3; i >= 0; --i)
-            {
-                int sum;
-                FA(V_S[i], V_C[i], carry, carry, sum);
-                v_est[i] = sum;
-            }
-
-            int v_m1 = v_est[0];
-            int v_0 = v_est[1];
-            int v_1 = v_est[2];
+            execute_V_block(V_S, V_C, v_est);
 
             // selm
-            int pp = (v_m1 ^ 1) & (v_0 | v_1);
-            int pn = v_m1 & ((v_0 ^ 1) | (v_1 ^ 1));
+            int p = execute_SELM(v_est);
 
-            int p = 0;
-            if (pp)
-                p = 1;
-            else if (pn)
-                p = -1;
-
-            int abs_p = pp | pn;
-            int v_0_star = v_0 ^ abs_p;
-
+            // M block
             int next_W_S[SZ] = {0};
             int next_W_C[SZ] = {0};
+            execute_M_block(p, v_est, V_S, V_C, next_W_S, next_W_C);
 
-            next_W_S[0] = v_0_star;
-            next_W_S[1] = v_est[2];
-            next_W_S[2] = v_est[3];
-
-            for (int i = 3; i < SZ; ++i)
-            {
-                next_W_S[i] = (i + 1 < SZ) ? V_S[i + 1] : 0;
-                next_W_C[i] = (i + 1 < SZ) ? V_C[i + 1] : 0;
-            }
-
-            next_W_C[0] = 0;
-            next_W_C[1] = 0;
-            next_W_C[2] = 0;
-
+            // ---------------------------------------
+            // Trace Printing Formatting
+            // ---------------------------------------
             int frac_bits = j + 7;
             if (j > (int)N - 4)
             {
@@ -342,9 +378,8 @@ public:
         std::cout << "Computed SD Result (Dec): " << final_result << "\n";
         std::cout << "Expected x_in * y_in    : " << expected_x << " * " << expected_y << " = " << exact_product << "\n";
         std::cout << "Truncation Error        : " << truncation_error << "\n";
-        std::cout << "Target Error Bound      : " << std::pow(2.0, -(int)N) << " (2^" << -(int)N << ")" << "\n ";
-        std::cout
-            << "==============================================================================\n";
+        std::cout << "Target Error Bound      : " << std::pow(2.0, -(int)N) << " (2^" << -(int)N << ")" << "\n";
+        std::cout << "==============================================================================\n";
     }
 };
 
