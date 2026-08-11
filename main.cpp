@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cmath> // Added for std::pow and std::abs
 
 // Standard gate-level Full Adder
 void FA(int a, int b, int c, int &cout, int &sum)
@@ -136,14 +137,14 @@ std::string format_w_assimilated(const int S[], const int C[], int SZ, int frac_
 
 // Selector Block routing
 template <size_t N>
-void select_val(int dir, const CAReg<N> &reg, int A[], int &c, int SZ)
+void select_val(int dir, const CAReg<N> &reg, int A[], int SZ)
 {
     for (int i = 0; i < SZ; ++i)
         A[i] = 0;
 
     if (dir != 0)
     {
-        for (int i = 1; i <= N; ++i)
+        for (int i = 1; i < reg.step; ++i)
         {
             if (i + 4 < SZ)
                 A[i + 4] = reg.get_bit(i);
@@ -153,16 +154,29 @@ void select_val(int dir, const CAReg<N> &reg, int A[], int &c, int SZ)
     // 2's complement negation exactly at the dynamic boundaries
     if (dir == -1)
     {
-        // Invert only down to the LSB of the valid fractional string to prevent carry trapping
-        for (int i = 0; i <= N + 4 && i < SZ; ++i)
+        int lsb_idx = reg.step - 1 + 4;
+        if (lsb_idx >= SZ)
+            lsb_idx = SZ - 1;
+
+        for (int i = 0; i <= lsb_idx; ++i)
         {
             A[i] = A[i] ^ 1;
         }
-        c = 1;
-    }
-    else
-    {
-        c = 0;
+
+        int idx = lsb_idx;
+        while (idx >= 0)
+        {
+            if (A[idx] == 0)
+            {
+                A[idx] = 1;
+                break;
+            }
+            else
+            {
+                A[idx] = 0;
+                idx--;
+            }
+        }
     }
 }
 
@@ -178,8 +192,11 @@ class OnlineMultiplier
 public:
     void run(const std::vector<int> &x_in, const std::vector<int> &y_in)
     {
-        std::cout << " j | x_in | y_in |     x[j+1] |     y[j+1] |            v[j] | p_out |          w[j+1]\n";
+        std::cout << " j | x_in | y_in |     x[j+1] |     y[j+1] |            v[j] | p_out |         w[j+1]\n";
         std::cout << "------------------------------------------------------------------------------------------\n";
+
+        std::vector<int> p_out_seq;
+        double final_result = 0.0;
 
         for (int j = -3; j < (int)N; ++j)
         {
@@ -188,16 +205,13 @@ public:
             int yj4 = (k >= 1 && k <= (int)N) ? y_in[k - 1] : 0;
 
             X_reg.append(xj4, N);
-
-            int A[SZ], c_A;
-            select_val(xj4, Y_reg, A, c_A, SZ);
+            int A[SZ];
+            select_val(xj4, Y_reg, A, SZ);
 
             Y_reg.append(yj4, N);
+            int B[SZ];
+            select_val(yj4, X_reg, B, SZ);
 
-            int B[SZ], c_B;
-            select_val(yj4, X_reg, B, c_B, SZ);
-
-            // [4:2] Compressor Array - Layer 1
             int c1_out[SZ] = {0};
             int s1[SZ] = {0};
             for (int i = 0; i < SZ; ++i)
@@ -205,17 +219,11 @@ public:
                 FA(W_S[i], W_C[i], A[i], c1_out[i], s1[i]);
             }
 
-            // [4:2] Compressor Array - Layer 2 (generating carry-save v[j])
             int V_S[SZ] = {0};
             int V_C[SZ] = {0};
             for (int i = 0; i < SZ; ++i)
             {
                 int cin_layer2 = (i + 1 < SZ) ? c1_out[i + 1] : 0;
-
-                // Inject the 2's complement carry exactly at the valid LSB
-                if (i == N + 4)
-                    cin_layer2 |= c_A;
-
                 int c2;
                 FA(s1[i], B[i], cin_layer2, c2, V_S[i]);
                 if (i > 0)
@@ -223,26 +231,22 @@ public:
                     V_C[i - 1] = c2;
                 }
             }
-            if (N + 4 < SZ)
-                V_C[N + 4] |= c_B; // Inject B's 2's complement carry
 
-            // V Block Assimilation (Assimilating 6 bits to securely cross the truncation boundary)
             int carry = 0;
-            int v_est[6] = {0};
-            for (int i = 5; i >= 0; --i)
+            int v_est[4] = {0};
+            for (int i = 3; i >= 0; --i)
             {
                 int sum;
                 FA(V_S[i], V_C[i], carry, carry, sum);
                 v_est[i] = sum;
             }
 
-            // SELM Logic using exact switching expressions mapped to v_est top bits
             int v_m1 = v_est[0];
             int v_0 = v_est[1];
             int v_1 = v_est[2];
 
-            int pp = (v_m1 ^ 1) & (v_0 | v_1);       //
-            int pn = v_m1 & ((v_0 ^ 1) | (v_1 ^ 1)); //
+            int pp = (v_m1 ^ 1) & (v_0 | v_1);
+            int pn = v_m1 & ((v_0 ^ 1) | (v_1 ^ 1));
 
             int p = 0;
             if (pp)
@@ -251,14 +255,11 @@ public:
                 p = -1;
 
             int abs_p = pp | pn;
-
-            // M Block: Boolean XOR replacement for subtraction mapped physically to wiring
             int v_0_star = v_0 ^ abs_p;
 
             int next_W_S[SZ] = {0};
             int next_W_C[SZ] = {0};
 
-            // Hardware wired left-shift routing
             next_W_S[0] = v_0_star;
             next_W_S[1] = v_est[2];
             next_W_S[2] = v_est[3];
@@ -302,7 +303,43 @@ public:
                       << std::setw(15) << s_v << " | "
                       << std::setw(5) << sp << " | "
                       << std::setw(15) << s_w << "\n";
+
+            // Accumulate output digit logic
+            if (j >= 0)
+            {
+                p_out_seq.push_back(p);
+                final_result += p * std::pow(2.0, -(j + 1));
+            }
         }
+
+        // Output Result Verification block
+        double expected_x = 0;
+        double expected_y = 0;
+        for (size_t i = 0; i < x_in.size(); ++i)
+            expected_x += x_in[i] * std::pow(2.0, -(int)(i + 1));
+        for (size_t i = 0; i < y_in.size(); ++i)
+            expected_y += y_in[i] * std::pow(2.0, -(int)(i + 1));
+
+        double exact_product = expected_x * expected_y;
+        double truncation_error = std::abs(exact_product - final_result);
+
+        std::cout << "\n================================ FINAL RESULTS ===============================\n";
+        std::cout << "Hardware P_out Sequence : 0.";
+        for (int p_val : p_out_seq)
+        {
+            if (p_val == -1)
+                std::cout << "[-1]";
+            else
+                std::cout << p_val;
+        }
+
+        std::cout << "\n\n";
+        std::cout << std::fixed << std::setprecision(8);
+        std::cout << "Computed SD Result (Dec): " << final_result << "\n";
+        std::cout << "Expected x_in * y_in    : " << expected_x << " * " << expected_y << " = " << exact_product << "\n";
+        std::cout << "Truncation Error        : " << truncation_error << "\n";
+        std::cout << "Target Error Bound      : " << std::pow(2.0, -(int)N) << " (2^-8)\n";
+        std::cout << "==============================================================================\n";
     }
 };
 
@@ -311,7 +348,7 @@ int main()
     std::vector<int> x = {1, 1, 0, -1, 1, 0, -1, 1};
     std::vector<int> y = {1, 0, 1, -1, -1, 1, 1, 0};
 
-    OnlineMultiplier<8> mult;
+    OnlineMultiplier<64> mult;
     mult.run(x, y);
 
     return 0;
